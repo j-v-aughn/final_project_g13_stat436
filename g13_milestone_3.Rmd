@@ -945,7 +945,333 @@ server <- function(input, output) {
 
 shinyApp(ui = ui, server = server)
 ```
+## Jack Updated Code
+```{r}
+library(shiny)
+library(tidyverse)
+library(ggplot2)
+library(reshape2)
+library(dplyr)
+library(ggnewscale)
 
+alzheimers <- read.csv("https://uwmadison.box.com/shared/static/a2a74zejbdt5ywk7pxsvsw06gsypi8to.csv")
+```
+
+```{r}
+alzheimers <- alzheimers %>%
+  filter(!if_any(everything(), ~ . == "Medium")) %>%
+  filter(Sleep.Quality != "Average") %>%
+  filter(Dietary.Habits != "Average")
+
+country_choices <- c("All Countries", sort(unique(alzheimers$Country)))
+```
+
+```{r}
+ui <- fluidPage(
+  theme = bslib::bs_theme(bootswatch = "flatly"),
+  titlePanel(div(
+    h1("Selected Risk Factors in Alzheimer's Diagnoses", align = "center"),
+    h4("Interactive Visualization by Gender and Health Conditions", align = "center", style = "color: #666;")
+  )),
+  
+  wellPanel(
+    p("This visualization shows the relationship between various health factors and Alzheimer's disease cases, segmented by gender. Darker colors indicate higher case counts. The data helps visualize the degree to which different factors are associated with Alzheimer's and whether the factors affect males and females differently."),
+    p(strong("Instructions:"), "Select a country and health condition(s) of interest from the sidebar. The visualization will update automatically.")
+  ),
+  
+  sidebarLayout(
+    sidebarPanel(
+      selectInput("country", "Select Country:", 
+                  choices = country_choices,
+                  selected = "All Countries"),
+      
+      div(
+        h4("Select Health Factors:"),
+        div(
+          style = "background-color: #f9f9f9; padding: 10px; margin-bottom: 10px; border-radius: 5px;",
+          h5("Physical Health Factors", style = "margin-top: 0;"),
+          checkboxInput("selectAllPhysical", "Select All Physical Factors", FALSE),
+          checkboxGroupInput("physicalFactors", NULL,
+                            choices = c(
+                              "Diabetes",
+                              "Hypertension"
+                            ),
+                            selected = c("Diabetes"))
+        ),
+        
+        div(
+          style = "background-color: #f9f9f9; padding: 10px; margin-bottom: 10px; border-radius: 5px;",
+          h5("Mental Health Factors", style = "margin-top: 0;"),
+          checkboxInput("selectAllMental", "Select All Mental Factors", FALSE),
+          checkboxGroupInput("mentalFactors", NULL,
+                            choices = c(
+                              "Depression Level",
+                              "Stress Level"
+                            ),
+                            selected = c("Depression Level"))
+        ),
+
+        div(
+          style = "background-color: #f9f9f9; padding: 10px; margin-bottom: 10px; border-radius: 5px;",
+          h5("Lifestyle Factors", style = "margin-top: 0;"),
+          checkboxInput("selectAllLifestyle", "Select All Lifestyle Factors", FALSE),
+          checkboxGroupInput("lifestyleFactors", NULL,
+                            choices = c(
+                              "Activity Level",
+                              "Sleep Quality",
+                              "Social Engagement"
+                            ),
+                            selected = c())
+        ),
+        
+        div(
+          style = "background-color: #f9f9f9; padding: 10px; margin-bottom: 10px; border-radius: 5px;",
+          h5("Genetic Factors", style = "margin-top: 0;"),
+          checkboxGroupInput("geneticFactors", NULL,
+                            choices = c(
+                              "Family History of Alzheimer's"
+                            ),
+                            selected = c())
+        )
+      ),
+      
+      div(
+        style = "border-top: 1px solid #eee; padding-top: 10px; margin-top: 10px;",
+        h4("Advanced Options:"),
+        selectInput("colorScheme", "Color Scheme:",
+                   choices = c("Blue/Red (Colorblind Friendly)" = "colorblind",
+                              "Sequential Blues/Purples" = "sequential",
+                              "Diverging" = "diverging"),
+                   selected = "colorblind"),
+        checkboxInput("showLabels", "Show Value Labels", TRUE),
+        checkboxInput("normalizeCounts", "Normalize Counts (%)", FALSE)
+      )
+    ),
+    
+    mainPanel(
+      br(),
+      plotOutput("heatmap", height = "600px"),
+      br(),
+      div(id = "legend-key",
+          style = "background-color: #f9f9f9; padding: 15px; border-radius: 5px;",
+          h4("How to Interpret:"),
+          p("Each tile represents the number of Alzheimer's cases associated with a specific factor."),
+          p("• Y-axis: Selected health factors"),
+          p("• X-axis: Status of each condition (Yes/No or High/Low)"),
+          p("• Color intensity: Darker colors indicate higher number of cases")
+      )
+    )
+  )
+)
+
+server <- function(input, output, session) {
+  selected_predictors <- reactive({
+    c(input$physicalFactors, input$mentalFactors, input$lifestyleFactors, input$geneticFactors)
+  })
+  
+  observeEvent(input$selectAllPhysical, {
+    if(input$selectAllPhysical) {
+      updateCheckboxGroupInput(session, "physicalFactors", 
+                              selected = c("Diabetes", "Hypertension"))
+    } else {
+      updateCheckboxGroupInput(session, "physicalFactors", selected = c())
+    }
+  })
+  
+  observeEvent(input$selectAllMental, {
+    if(input$selectAllMental) {
+      updateCheckboxGroupInput(session, "mentalFactors", 
+                              selected = c("Depression Level", "Stress Level"))
+    } else {
+      updateCheckboxGroupInput(session, "mentalFactors", selected = c())
+    }
+  })
+  
+  observeEvent(input$selectAllLifestyle, {
+    if(input$selectAllLifestyle) {
+      updateCheckboxGroupInput(session, "lifestyleFactors", 
+                              selected = c("Activity Level", "Sleep Quality", "Social Engagement"))
+    } else {
+      updateCheckboxGroupInput(session, "lifestyleFactors", selected = c())
+    }
+  })
+  
+  filtered_data <- reactive({
+    if(input$country == "All Countries") {
+      data <- alzheimers
+    } else {
+      data <- alzheimers %>% filter(Country == input$country)
+    }
+    return(data)
+  })
+
+  heatmap_data <- reactive({
+    alzheimers <- filtered_data() %>% 
+      filter(Alzheimer.s.Diagnosis == "Yes")
+    if(nrow(alzheimers) == 0) {
+      return(NULL)
+    }
+    
+    conditions <- selected_predictors()
+    if(length(conditions) == 0) return(NULL)
+    
+    combined_data <- list()
+    
+    condition_map <- list(
+      "Diabetes" = "Diabetes",
+      "Hypertension" = "Hypertension",
+      "Depression Level" = "Depression.Level",
+      "Activity Level" = "Physical.Activity.Level",
+      "Sleep Quality" = "Sleep.Quality",
+      "Social Engagement" = "Social.Engagement.Level",
+      "Family History of Alzheimer's" = "Family.History.of.Alzheimer.s",
+      "Stress Level" = "Stress.Levels"
+    )
+    
+    for(condition in conditions) {
+      if(condition %in% names(condition_map)) {
+        column_name <- condition_map[[condition]]
+        temp <- melt(table(alzheimers$Gender, alzheimers[[column_name]]))
+        colnames(temp) <- c("Gender", "Condition", "Count")
+        temp$HealthFactor <- condition
+        
+        if(input$normalizeCounts) {
+          total_by_gender <- temp %>%
+            group_by(Gender, HealthFactor) %>%
+            summarize(Total = sum(Count), .groups = "drop")
+          
+          temp <- temp %>%
+            left_join(total_by_gender, by = c("Gender", "HealthFactor")) %>%
+            mutate(Count = (Count / Total) * 100) %>%
+            select(-Total)
+        }
+        
+        combined_data[[length(combined_data)+1]] <- temp
+      }
+    }
+    
+    if (length(combined_data) == 0) return(NULL)
+    
+    heatmap_data <- do.call(rbind, combined_data)
+    
+    heatmap_data$HealthFactor <- factor(heatmap_data$HealthFactor, levels = conditions)
+    
+    if(any(grepl("Level|Quality", heatmap_data$Condition))) {
+      level_order <- c("Low", "Medium", "High")
+      heatmap_data$Condition <- factor(heatmap_data$Condition, 
+                                     levels = c("No", "Yes", level_order))
+    }
+    
+    return(heatmap_data)
+  })
+  
+  output$heatmap <- renderPlot({
+    data <- heatmap_data()
+    if (is.null(data) || nrow(data) == 0) {
+      return(ggplot() + 
+               annotate("text", x = 0.5, y = 0.5, 
+                       label = "Please select at least one health condition to display") +
+               theme_void() +
+               xlim(0, 1) + 
+               ylim(0, 1))
+    }
+    
+    color_scheme <- input$colorScheme
+    if(color_scheme == "colorblind") {
+      male_colors <- scale_fill_gradient(low = "#E6F0FF", high = "#0072B2", 
+                                       name = if(input$normalizeCounts) "% of Male Cases" else "Male Cases")
+      female_colors <- scale_fill_gradient(low = "#FFE6E6", high = "#D55E00", 
+                                         name = if(input$normalizeCounts) "% of Female Cases" else "Female Cases")
+    } else if(color_scheme == "sequential") {
+      male_colors <- scale_fill_gradient(low = "#E6E6FF", high = "#3333CC", 
+                                       name = if(input$normalizeCounts) "% of Male Cases" else "Male Cases")
+      female_colors <- scale_fill_gradient(low = "#F2E6FF", high = "#8B00CC", 
+                                         name = if(input$normalizeCounts) "% of Female Cases" else "Female Cases")
+    } else {
+      male_colors <- scale_fill_gradient2(low = "#4575B4", mid = "#FFFFBF", high = "#D73027", 
+                                        midpoint = median(data$Count[data$Gender == "Male"]), 
+                                        name = if(input$normalizeCounts) "% of Male Cases" else "Male Cases")
+      female_colors <- scale_fill_gradient2(low = "#4575B4", mid = "#FFFFBF", high = "#D73027", 
+                                          midpoint = median(data$Count[data$Gender == "Female"]), 
+                                          name = if(input$normalizeCounts) "% of Female Cases" else "Female Cases")
+    }
+    
+    male_data <- data %>% filter(Gender == "Male")
+    female_data <- data %>% filter(Gender == "Female")
+    
+    if(input$showLabels) {
+      male_labels <- geom_text(data = male_data, 
+                              aes(x = Condition, y = HealthFactor, 
+                                  label = if(input$normalizeCounts) 
+                                    sprintf("%.1f%%", Count) else 
+                                    as.character(Count)), 
+                              color = "black", size = 3.5)
+      
+      female_labels <- geom_text(data = female_data, 
+                                aes(x = Condition, y = HealthFactor, 
+                                    label = if(input$normalizeCounts) 
+                                      sprintf("%.1f%%", Count) else 
+                                      as.character(Count)), 
+                                color = "black", size = 3.5)
+    } else {
+      male_labels <- NULL
+      female_labels <- NULL
+    }
+    
+    title <- paste("Alzheimer's Cases by Gender and Health Conditions", 
+                 if (input$country != "All Countries") paste("in", input$country) else "")
+
+    subtitle <- if(input$normalizeCounts) {
+      "Values shown as percentages within each gender group"
+    } else {
+      "Values show actual case counts"
+    }
+    
+    ggplot() +
+      geom_tile(data = male_data, 
+                aes(x = Condition, y = HealthFactor, fill = Count), 
+                color = "black") +
+      geom_hline(yintercept = seq(1.5, length(unique(data$HealthFactor))-0.5, 1), 
+           color = "darkgrey", 
+           linewidth = .5) +
+      male_colors +
+      male_labels +
+      new_scale_fill() +
+      
+      geom_tile(data = female_data, 
+                aes(x = Condition, y = HealthFactor, fill = Count), 
+                color = "black") +
+      female_colors +
+      female_labels +
+
+      facet_grid(. ~ Gender, scales = "free_x", space = "free_x") +
+      
+      labs(title = title,
+           subtitle = subtitle,
+           x = "Condition Status", 
+           y = "Health Factor") +
+      
+      theme_minimal() +
+      theme(
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.text.y = element_text(size = 11, face = "bold"),
+        axis.text.x = element_text(size = 10),
+        strip.text = element_text(size = 12, face = "bold"),
+        plot.title = element_text(hjust = 0.5, face = "bold", size = 16),
+        plot.subtitle = element_text(hjust = 0.5, size = 11, color = "#666666"),
+        legend.position = "bottom",
+        legend.title = element_text(size = 10),
+        legend.text = element_text(size = 9),
+        legend.key.size = unit(0.8, "cm"),
+        panel.spacing.x = unit(0.5, "lines"),
+        panel.border = element_rect(color = "white", fill = NA, size = .5)
+      )
+  })
+}
+
+shinyApp(ui = ui, server = server)
+```
 ---
 
 ## Beomseong Original Code
